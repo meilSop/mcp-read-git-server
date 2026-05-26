@@ -454,19 +454,25 @@ export function generateDemoScenarios(analysis: ComponentAnalysis): Array<{
   return demos;
 }
 
+/** HTML 属性转义 */
+function escapeHtmlAttr(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /** 渲染 demos 区块（<demo> 标签集合） */
 function renderDemosBlock(analysis: ComponentAnalysis): string {
   const scenarios = generateDemoScenarios(analysis);
   if (scenarios.length === 0) return '';
 
   return scenarios
-    .map((s, i) => {
-      const titleLine = i === 0 ? `## ${s.title}` : `## ${s.title}`;
-      return `${titleLine}
+    .map((s) => {
+      return `## ${s.title}
 
-${s.description}
-
-<demo title="${s.title}" description="${s.description}" src="${s.src}" />`;
+<demo title="${escapeHtmlAttr(s.title)}" description="${escapeHtmlAttr(s.description)}" src="${s.src}" />`;
     })
     .join('\n\n');
 }
