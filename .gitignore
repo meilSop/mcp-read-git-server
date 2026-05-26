@@ -4,3 +4,5 @@ output/
 .env
 *.js.map
 *.d.ts.map
+*.rar
+*.zip
