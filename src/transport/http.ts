@@ -9,10 +9,10 @@
 /**
  * Streamable HTTP 传输模式 - 远程部署
  */
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import express from 'express';
 import { randomUUID } from 'node:crypto';
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
@@ -36,123 +36,92 @@ export async function startHttpTransport(
   port: number,
   host: string
 ): Promise<void> {
-  const app = createMcpExpressApp({ host });
+  const app = express();
+  app.use(express.json());
 
-  // 解析 JSON body
-  app.use((req: { body?: unknown }, _res: unknown, next: () => void) => {
-    // Express 的 json middleware 已经解析了 body
-    next();
-  });
+  // 统一 MCP 端点 - 处理 POST / GET / DELETE
+  // MCP Streamable HTTP 协议要求所有方法共用同一个端点
+  const mcpHandler = async (req: express.Request, res: express.Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
-  // POST /mcp - 处理 MCP 请求
-  app.post(
-    '/mcp',
-    async (
-      req: { headers: Record<string, string | string[] | undefined>; body: unknown },
-      res: {
-        status: (code: number) => { json: (body: unknown) => void; send: (body: string) => void };
-        headersSent?: boolean;
-      }
-    ) => {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    try {
+      let transport: StreamableHTTPServerTransport;
 
-      try {
-        let transport: StreamableHTTPServerTransport;
+      if (sessionId && transports[sessionId]) {
+        // 1. 已有 session - 复用 transport
+        transport = transports[sessionId];
+      } else if (req.method === 'GET' && !sessionId) {
+        // 2. GET 无 session ID - 建立独立 SSE 流（服务端推送通知）
+        const { server, transport: newTransport } = getServer(serverCreator);
+        transport = newTransport;
+        await server.connect(transport);
 
-        if (sessionId && transports[sessionId]) {
-          // 复用已有 transport
-          transport = transports[sessionId];
-        } else if (!sessionId && isInitializeRequest(req.body)) {
-          // 新的初始化请求 - 创建新的 server + transport
-          const { server, transport: newTransport } = getServer(serverCreator);
-          transport = newTransport;
-          await server.connect(transport);
-
-          // 存储 transport
-          const sid = transport.sessionId;
-          if (sid) {
-            transports[sid] = transport;
-
-            // 清理已关闭的 transport
-            transport.onclose = () => {
-              delete transports[sid];
-            };
-          }
-
-          await transport.handleRequest(req as never, res as never, req.body);
-          return;
-        } else {
-          res.status(400).json({
-            jsonrpc: '2.0',
-            error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
-            id: null
-          });
-          return;
+        const sid = transport.sessionId;
+        if (sid) {
+          transports[sid] = transport;
+          transport.onclose = () => {
+            delete transports[sid];
+          };
         }
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // 3. POST initialize 无 session ID - 创建新会话
+        const { server, transport: newTransport } = getServer(serverCreator);
+        transport = newTransport;
+        await server.connect(transport);
 
-        await transport.handleRequest(req as never, res as never, req.body);
-      } catch (error) {
-        console.error('Error handling MCP request:', error);
-        if (!res.headersSent) {
-          res.status(500).json({
-            jsonrpc: '2.0',
-            error: { code: -32603, message: 'Internal server error' },
-            id: null
-          });
+        const sid = transport.sessionId;
+        if (sid) {
+          transports[sid] = transport;
+          transport.onclose = () => {
+            delete transports[sid];
+          };
         }
-      }
-    }
-  );
-
-  // GET /mcp - SSE 流
-  app.get(
-    '/mcp',
-    async (
-      req: { headers: Record<string, string | string[] | undefined> },
-      res: {
-        status: (code: number) => { send: (body: string) => void };
-      }
-    ) => {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (!sessionId || !transports[sessionId]) {
-        res.status(400).send('Invalid or missing session ID');
+      } else {
+        // 4. POST 非 initialize 且无 session ID - 非法请求
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Bad Request: No valid session ID provided. Send an initialize request first.'
+          },
+          id: null
+        });
         return;
       }
-      const transport = transports[sessionId];
-      await transport.handleRequest(req as never, res as never);
+
+      // 将请求透传给 SDK 的 transport.handleRequest
+      await transport.handleRequest(req as never, res as never, req.body);
+    } catch (error) {
+      console.error('Error handling MCP request:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null
+        });
+      }
     }
-  );
+  };
+
+  // POST /mcp - 处理 MCP JSON-RPC 请求
+  app.post('/mcp', mcpHandler);
+
+  // GET /mcp - SSE 流（服务端推送通知）
+  app.get('/mcp', mcpHandler);
 
   // DELETE /mcp - 会话终止
-  app.delete(
-    '/mcp',
-    async (
-      req: { headers: Record<string, string | string[] | undefined> },
-      res: {
-        status: (code: number) => { send: (body: string) => void };
-        headersSent?: boolean;
-      }
-    ) => {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (!sessionId || !transports[sessionId]) {
-        res.status(400).send('Invalid or missing session ID');
-        return;
-      }
-      try {
-        const transport = transports[sessionId];
-        await transport.handleRequest(req as never, res as never);
-      } catch (error) {
-        console.error('Error handling session termination:', error);
-        if (!res.headersSent) {
-          res.status(500).send('Error processing session termination');
-        }
-      }
-    }
-  );
+  app.delete('/mcp', mcpHandler);
+
+  // 健康检查
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', activeSessions: Object.keys(transports).length });
+  });
 
   // 启动服务器
   app.listen(port, () => {
     console.log(`MCP Streamable HTTP Server listening on ${host}:${port}`);
+    console.log(`Endpoints: POST/GET/DELETE http://${host}:${port}/mcp`);
+    console.log(`Health check: http://${host}:${port}/health`);
   });
 
   // 优雅关闭
