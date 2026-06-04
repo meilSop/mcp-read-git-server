@@ -293,6 +293,58 @@ server {
 
 ---
 
+### CodeBuddy（腾讯云代码助手）
+
+CodeBuddy 支持 **IDE 版**和 **VS Code 插件版**两种形式，配置方式相同。
+
+在侧栏对话面板右上角点击 **CodeBuddy Settings → MCP 标签页**，打开配置文件后添加：
+
+**本地 stdio 模式：**
+
+```json
+{
+  "mcpServers": {
+    "read-git": {
+      "command": "node",
+      "args": ["/path/to/read-gitlabl/dist/index.js"],
+      "env": {
+        "GITLAB_URL": "https://gitlab.your-company.com",
+        "GITLAB_TOKEN": "your-personal-access-token"
+      }
+    }
+  }
+}
+```
+
+**远程 HTTP 模式（Streamable HTTP）：**
+
+```json
+{
+  "mcpServers": {
+    "read-git": {
+      "url": "https://mcp-gitlab.your-company.com/mcp"
+    }
+  }
+}
+```
+
+**远程 HTTP+SSE 模式：**
+
+```json
+{
+  "mcpServers": {
+    "read-git": {
+      "type": "sse",
+      "url": "https://mcp-gitlab.your-company.com/sse"
+    }
+  }
+}
+```
+
+> **配置文件位置**：CodeBuddy IDE 版配置文件通常位于用户目录下的 `.codebuddy/mcp_settings.json`；VS Code 插件版在 VS Code 的 `settings.json` 中或通过界面直接编辑。
+
+---
+
 ## MCP 工具列表
 
 服务共提供 **8 个工具**，所有工具均支持通过 `gitlabToken` 参数覆盖服务端默认 Token。
